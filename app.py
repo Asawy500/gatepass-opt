@@ -8,8 +8,8 @@ import io
 
 # --- 1. Supabase Connection ---
 # بنسحب المفاتيح من Streamlit Secrets للأمان
-URL = st.secrets["https://uuzpretbqegrpuownltm.supabase.co/rest/v1/"]
-KEY = st.secrets["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1enByZXRicWVncnB1b3dubHRtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4NjI4NjgsImV4cCI6MjA5MjQzODg2OH0.bW79vCfGpHCoobzrvh5CZMdxQBl-4Zx_7PCB7pxhCDI"]
+URL = st.secrets["SUPABASE_URL"]
+KEY = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(URL, KEY)
 
 # --- 2. Page Config ---
