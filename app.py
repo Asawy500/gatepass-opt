@@ -82,19 +82,30 @@ with tabs[0]:
 with tabs[1]:
     st.subheader("Live Weighbridge Arrivals")
     # سحب البندنج فقط من السحاب
-    res = supabase.table("gate_passes").select("*").eq("status", "Pending").execute()
-    pending_df = pd.DataFrame(res.data)
+    res = supabase.table("gate_passes").select("*").execute()
+data = res.data
+
+if data:
+    df = pd.DataFrame(data)
     
-    if not pending_df.empty:
-        selection = st.selectbox("Select Arriving Truck:", pending_df['vehicle_no'] + " | GP: " + pending_df['gp_number'])
-        if st.button("Confirm Check-in ✅"):
-            gp_id = selection.split(" | GP: ")[1]
-            now = datetime.now().strftime("%H:%M")
-            supabase.table("gate_passes").update({"status": "Arrived", "arrival_time": now}).eq("gp_number", gp_id).execute()
-            st.success("Cloud Updated!")
-            st.rerun()
-    else:
-        st.success("No pending trucks.")
+    # --- إضافة العدادات فوق الـ Report ---
+    col_s1, col_s2 = st.columns(2)
+    pending_count = len(df[df['status'] == 'Pending'])
+    approved_count = len(df[df['status'] == 'Approved'])
+    
+    col_s1.metric("⏳ Pending", pending_count)
+    col_s2.metric("✅ Approved", approved_count)
+    # -----------------------------------
+
+    st.write("### Master Report")
+    st.dataframe(df)
+    
+    if st.button("Refresh Data"):
+        st.rerun() # دي بتخلي الصفحة تحدث نفسها برمجياً
+else:
+    st.info("No data found in the cloud.")
+
+
 
 # --- Tab 3: Master Report (Auto-Sorted) ---
 with tabs[2]:
