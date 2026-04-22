@@ -1,83 +1,123 @@
 import streamlit as st
-import pandas as pd
 import pdfplumber
 import re
+import pandas as pd
 from supabase import create_client, Client
+from datetime import datetime
+import io
 
-# 1. إعدادات الصفحة
-st.set_page_config(page_title="GP Cloud System", layout="wide")
-
-# 2. الربط مع Supabase
+# --- 1. Supabase Connection ---
 URL = st.secrets["SUPABASE_URL"]
 KEY = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(URL, KEY)
 
-# --- دالة استخراج البيانات من الـ PDF (ظبط الـ Regex حسب ملفك) ---
-def extract_gp_data(pdf_file):
-    with pdfplumber.open(pdf_file) as pdf:
-        text = pdf.pages[0].extract_text()
-        gp_num = re.search(r'GP\d+', text)
-        veh_no = re.search(r'[A-Z]{3}\s\d+|[A-Z]-\d+', text)
-        return {
-            "gp_number": gp_num.group(0) if gp_num else f"GP-{pd.Timestamp.now().strftime('%M%S')}",
-            "vehicle_no": veh_no.group(0) if veh_no else "N/A",
-            "status": "Pending"
-        }
+# --- 2. Page Config ---
+st.set_page_config(page_title="GP Cloud Optimizer", layout="wide")
 
-# --- واجهة المستخدم ---
+# تهيئة الـ uploader key لمسح الملفات بعد الرفع
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
+
+# دالة استخراج البيانات من الـ PDF
+def process_pdf_cloud(uploaded_file):
+    extracted = []
+    with pdfplumber.open(uploaded_file) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if not text: continue
+            
+            gp_no = re.search(r'FZGP\d+', text).group(0) if re.search(r'FZGP\d+', text) else "N/A"
+            v_match = re.search(r"Vehicle No\s*[:\.]?\s*([\w-]+)", text)
+            vehicle = v_match.group(1) if v_match else "N/A"
+            e_match = re.search(r"Valid Upto\s*[:\.]?\s*([\d/ :]+)", text)
+            expiry = e_match.group(1).strip() if e_match else "N/A"
+            
+            cargo, weight = "N/A", "0"
+            lines = text.split('\n')
+            for i, line in enumerate(lines):
+                if "BOE NO" in line:
+                    if i + 1 < len(lines):
+                        parts = lines[i+1].split()
+                        if len(parts) >= 3 and "DPW-" in parts[0]:
+                            cargo, weight = parts[1], parts[-1]
+
+            extracted.append({
+                "gp_number": gp_no, "vehicle_no": vehicle, "cargo": cargo,
+                "weight": weight, "expiry_date": expiry, "status": "Pending"
+            })
+    return extracted
+
+# --- 3. Statistics (العدادات اللي طلبتها) ---
+# سحب الداتا مرة واحدة للعدادات والتقرير
+all_res = supabase.table("gate_passes").select("*").order("created_at", desc=True).execute()
+all_data = all_res.data if all_res.data else []
+df_stats = pd.DataFrame(all_data)
+
 st.title("☁️ GP Cloud System - Live Sync")
 
-# جلب البيانات لعمل العدادات
-res = supabase.table("gate_passes").select("*").execute()
-df_all = pd.DataFrame(res.data) if res.data else pd.DataFrame()
-
-# العدادات فوق الـ Tabs
-if not df_all.empty:
-    p_count = len(df_all[df_all['status'] == 'Pending'])
-    a_count = len(df_all[df_all['status'] == 'Approved'])
+# عرض العدادات بشكل شيك وصغير فوق الـ Tabs
+if not df_stats.empty:
+    p_count = len(df_stats[df_stats['status'] == 'Pending'])
+    a_count = len(df_stats[df_stats['status'] == 'Arrived'])
     st.markdown(f"### 📊 ⏳ Pending: `{p_count}` | ✅ Approved: `{a_count}`")
 
-# 3. تقسيم الصفحات (Tabs)
-tab1, tab2, tab3 = st.tabs(["📤 Upload & Sync", "⚖️ Weighbridge", "📊 Master Report"])
+# --- 4. UI Tabs ---
+tabs = st.tabs(["📤 Upload & Sync", "⚖️ Weighbridge", "📊 Master Report"])
 
-# --- الصفحة الأولى: الرفع ---
-with tab1:
-    st.subheader("Upload PDF Gate Passes")
-    files = st.file_uploader("Choose Files", type="pdf", accept_multiple_files=True)
-    if st.button("Push to Cloud"):
-        if files:
-            for f in files:
-                data = extract_gp_data(f)
-                supabase.table("gate_passes").insert(data).execute()
-            st.success("Data Synced!")
-            st.rerun()
-
-# --- الصفحة الثانية: الميزان (تأكيد الوصول) ---
-with tab2:
-    st.subheader("Live Weighbridge Arrivals")
-    pending_df = df_all[df_all['status'] == 'Pending'] if not df_all.empty else pd.DataFrame()
+# --- Tab 1: Upload ---
+with tabs[0]:
+    st.subheader("Upload to Cloud Database")
+    files = st.file_uploader("Upload PDFs", accept_multiple_files=True, type=['pdf'], key=str(st.session_state.uploader_key))
     
-    if not pending_df.empty:
-        for _, row in pending_df.iterrows():
-            col1, col2, col3 = st.columns([2, 2, 1])
-            col1.write(f"**GP:** {row['gp_number']}")
-            col2.write(f"**Vehicle:** {row['vehicle_no']}")
-            if col3.button("Confirm Arrival", key=row['id']):
-                # تحديث الحالة في سوبابيز
-                supabase.table("gate_passes").update({
-                    "status": "Approved", 
-                    "arrival_time": pd.Timestamp.now().strftime('%H:%M:%S')
-                }).eq("id", row['id']).execute()
-                st.rerun() # دي اللي هتخفي السطر فوراً وتحدث العداد
-    else:
-        st.info("No pending trucks at weighbridge.")
-
-# --- الصفحة الثالثة: الريبورت الكامل ---
-with tab3:
-    st.subheader("Master Records")
-    if not df_all.empty:
-        st.dataframe(df_all.sort_values("created_at", ascending=False), use_container_width=True)
-        if st.button("Refresh Report"):
+    if st.button("Push to Cloud & Clear"):
+        if files:
+            added, updated = 0, 0
+            for f in files:
+                data_list = process_pdf_cloud(f)
+                for data in data_list:
+                    check = supabase.table("gate_passes").select("gp_number").eq("gp_number", data['gp_number']).execute()
+                    if len(check.data) > 0:
+                        supabase.table("gate_passes").update(data).eq("gp_number", data['gp_number']).execute()
+                        updated += 1
+                    else:
+                        supabase.table("gate_passes").insert(data).execute()
+                        added += 1
+            st.session_state.uploader_key += 1
             st.rerun()
+
+# --- Tab 2: Weighbridge (الـ Select Box اللي كان ناقص) ---
+with tabs[1]:
+    st.subheader("Live Weighbridge Arrivals")
+    # فلترة البندنج فقط من الداتا اللي سحبناها
+    if not df_stats.empty:
+        pending_df = df_stats[df_stats['status'] == 'Pending']
+        if not pending_df.empty:
+            # هنا لستة العربيات والـ GP بتظهر زي ما كنت عايزها
+            selection = st.selectbox("Select Arriving Truck:", pending_df['vehicle_no'] + " | GP: " + pending_df['gp_number'])
+            if st.button("Confirm Check-in ✅"):
+                gp_id = selection.split(" | GP: ")[1]
+                now = datetime.now().strftime("%H:%M")
+                supabase.table("gate_passes").update({"status": "Arrived", "arrival_time": now}).eq("gp_number", gp_id).execute()
+                st.success(f"Truck {selection} Arrived!")
+                st.rerun()
+        else:
+            st.success("No pending trucks.")
     else:
-        st.write("No records found.")
+        st.info("Database is empty.")
+
+# --- Tab 3: Master Report ---
+with tabs[2]:
+    st.subheader("Full Database Log")
+    if not df_stats.empty:
+        # ترتيب البندنج فوق
+        df_stats['status'] = pd.Categorical(df_stats['status'], categories=["Pending", "Arrived"], ordered=True)
+        full_df = df_stats.sort_values(by="status")
+        st.dataframe(full_df, use_container_width=True)
+        
+        buffer = io.BytesIO()
+        full_df.to_excel(buffer, index=False)
+        st.download_button("📥 Download Excel Report", data=buffer.getvalue(), file_name="Cloud_Report.xlsx")
+
+# --- Sidebar ---
+p_sidebar = len(df_stats[df_stats['status'] == 'Pending']) if not df_stats.empty else 0
+st.sidebar.metric("Potential Savings", f"{p_sidebar * 35.7:.2f} AED")
