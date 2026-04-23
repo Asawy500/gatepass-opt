@@ -105,18 +105,41 @@ with tabs[1]:
     else:
         st.info("Database is empty.")
 
-# --- Tab 3: Master Report ---
+# --- Tab 3: Master Report (Modified) ---
 with tabs[2]:
     st.subheader("Full Database Log")
     if not df_stats.empty:
-        # ترتيب البندنج فوق
-        df_stats['status'] = pd.Categorical(df_stats['status'], categories=["Pending", "Arrived"], ordered=True)
-        full_df = df_stats.sort_values(by="status")
-        st.dataframe(full_df, use_container_width=True)
+        # 1. إضافة فلتر فوق الجدول
+        filter_status = st.multiselect("Filter by Status:", options=["Pending", "Arrived"], default=["Pending", "Arrived"])
         
+        # تطبيق الفلتر
+        filtered_df = df_stats[df_stats['status'].isin(filter_status)].copy()
+
+        # 2. حساب الساعات المتبقية (Remaining Hours)
+        def calc_hours(row):
+            if row['status'] == 'Pending' and row['expiry_date'] != "N/A":
+                try:
+                    # تحويل النص لتاريخ (تأكد من مطابقة الفورمات المكتوب في الصورة)
+                    expiry = datetime.strptime(row['expiry_date'], "%d/%m/%Y %H:%M")
+                    now = datetime.now()
+                    diff = expiry - now
+                    hours = diff.total_seconds() / 3600
+                    return f"{round(hours, 1)} hrs"
+                except:
+                    return "Date Err"
+            return "-"
+
+        filtered_df['Remaining Time'] = filtered_df.apply(calc_hours, axis=1)
+
+        # ترتيب العرض: التوقيت المتبقي الأقل يظهر الأول في البندنج
+        st.dataframe(filtered_df, use_container_width=True)
+        
+        # تحميل الإكسيل للبيانات المفلترة
         buffer = io.BytesIO()
-        full_df.to_excel(buffer, index=False)
-        st.download_button("📥 Download Excel Report", data=buffer.getvalue(), file_name="Cloud_Report.xlsx")
+        filtered_df.to_excel(buffer, index=False)
+        st.download_button("📥 Download Filtered Excel", data=buffer.getvalue(), file_name="Cloud_Report.xlsx")
+    else:
+        st.write("No records found.")
 
 # --- Sidebar ---
 p_sidebar = len(df_stats[df_stats['status'] == 'Pending']) if not df_stats.empty else 0
